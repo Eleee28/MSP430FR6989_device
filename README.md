@@ -1,4 +1,4 @@
-# Labs_EC
+# MSP430FR6989_device
 In this repository you will find all the lab practices carried out in the subject of Computer Structures (EC). This labs consist on programming input/output devices. We will be using the MSP430FR6989 board from Texas Instruments and the IDE Code Composer Studio (CCS).
 
 > [!NOTE]
