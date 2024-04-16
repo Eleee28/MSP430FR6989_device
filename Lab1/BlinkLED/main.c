@@ -48,7 +48,7 @@
 //  March 2015
 //  Built with Code Composer Studio v6
 //***************************************************************************************
-/*
+
 #include <driverlib.h>
 
 int main(void) {
@@ -79,4 +79,4 @@ int main(void) {
         // Delay
         for(i=10000; i>0; i--);
     }
-}*/
+}
