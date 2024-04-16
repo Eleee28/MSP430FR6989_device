@@ -1,211 +1,494 @@
-#include <msp430.h>
+/* --COPYRIGHT--,BSD
+ * Copyright (c) 2015, Texas Instruments Incorporated
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *
+ * *  Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ *
+ * *  Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * *  Neither the name of Texas Instruments Incorporated nor the names of
+ *    its contributors may be used to endorse or promote products derived
+ *    from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
+ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+ * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+ * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+ * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+ * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * --/COPYRIGHT--*/
+/*******************************************************************************
+ *
+ * main.c
+ *
+ * Out of Box Demo for the MSP-EXP430FR6989
+ * Main loop, initialization, and interrupt service routines
+ *
+ * This demo provides 2 application modes: Stopwatch Mode and Temperature Mode
+ *
+ * The stopwatch mode provides a simple stopwatch application that supports split
+ * time, where the display freezes while the stopwatch continues running in the
+ * background.
+ *
+ * The temperature mode provides a simple thermometer application using the
+ * on-chip temperature sensor. Display toggles between C/F.
+ *
+ * February 2015
+ * E. Chen
+ *
+ ******************************************************************************/
 
-char c = 'A'; // Initialize the first letter to be sent
-int buffer[6] = {0}; // Initialize the buffer
+#include <driverlib.h>
+#include "StopWatchMode.h"
+#include "TempSensorMode.h"
+#include "hal_LCD.h"
 
-//**********************************************************
-// Initializes the LCD_C module
-// *** Source: Function obtained from MSP430FR6989�s Sample Code ***
-void Initialize_LCD() {
-    PJSEL0 = BIT4 | BIT5; // For LFXT
+#define STARTUP_MODE         0
 
-    // Initialize LCD segments 0 - 21; 26 - 43
-    LCDCPCTL0 = 0xFFFF;
-    LCDCPCTL1 = 0xFC3F;
-    LCDCPCTL2 = 0x0FFF;
+volatile unsigned char mode = STARTUP_MODE;
+volatile unsigned char stopWatchRunning = 0;
+volatile unsigned char tempSensorRunning = 0;
+volatile unsigned char S1buttonDebounce = 0;
+volatile unsigned char S2buttonDebounce = 0;
+volatile unsigned int holdCount = 0;
+volatile unsigned int counter = 0;
+volatile int centisecond = 0;
+Calendar currentTime;
 
-    // Configure LFXT 32kHz crystal
-    CSCTL0_H = CSKEY >> 8; // Unlock CS registers
-    CSCTL4 &= ~LFXTOFF; // Enable LFXT
-
-    do {
-        CSCTL5 &= ~LFXTOFFG; // Clear LFXT fault flag
-        SFRIFG1 &= ~OFIFG;
-    } while (SFRIFG1 & OFIFG); // Test oscillator fault flag
-
-    CSCTL0_H = 0; // Lock CS registers
-
-    // Initialize LCD_C
-    // ACLK, Divider = 1, Pre-divider = 16; 4-pin MUX
-    LCDCCTL0 = LCDDIV_1 | LCDPRE_16 | LCD4MUX | LCDLP;
-
-    // VLCD generated internally,
-    // V2-V4 generated internally, v5 to ground
-    // Set VLCD voltage to 2.60v
-    // Enable charge pump and select internal reference for it
-    LCDCVCTL = VLCD_1 | VLCDREF_0 | LCDCPEN;
-    LCDCCPCTL = LCDCPCLKSYNC; // Clock synchronization enabled
-    LCDCMEMCTL = LCDCLRM; // Clear LCD memory
-    //Turn LCD on
-    LCDCCTL0 |= LCDON;
-    return;
-}
-
-//function that displays any 16-bit unsigned integer***********
-void display_num_lcd(unsigned int n){
-    //initialize i to count though input paremter from main function, digit is used for while loop so as long as n is
-   // not 0 the if statements will be executed.
-
-    const unsigned char LCD_Num[10] = {0xFC, 0x60, 0xDB, 0xF3, 0x67, 0xB7, 0xBF, 0xE0, 0xFF, 0xE7};
-    int i;
-    int digit;
-
-    digit = n;
-
-    while(digit!=0) {
-        digit = digit*10;
-        i++;
-    }
-
-    if(i>1000) {
-        LCDM8 = LCD_Num[n%10]; // inputs the first(least significant digit) from the array onto the LCD output.
-        n=n/10;
-        i++;
-    }
-    if(i>100) {
-        LCDM15 = LCD_Num[n%10]; // inputs the second(least significant digit) from the array onto the LCD output.
-        n=n/10;
-        i++;
-    }
-    if(i>10) {
-        LCDM19 = LCD_Num[n%10]; // inputs the third(least significant digit) from the array onto the LCD output.
-        n=n/10;
-        i++;
-    }
-    if(i>1) {
-        LCDM4 = LCD_Num[n%10]; // inputs the fourth(least significant digit) from the array onto the LCD output.
-        n=n/10;
-        i++;
-    }
-    if(i>0) {
-        LCDM6 = LCD_Num[n%10]; // inputs the last (most significant digit) from the array onto the LCD output.
-        n=n/10;
-        i++;
-    }
-}
-
-
-const char alphabetBig[26][2] =
+// TimerA0 UpMode Configuration Parameter
+Timer_A_initUpModeParam initUpParam_A0 =
 {
-    {0xEF, 0x00}, /* "A" LCD segments a+b+c+e+f+g+m */
-    {0xF1, 0x50}, /* "B" */
-    {0x9C, 0x00}, /* "C" */
-    {0xF0, 0x50}, /* "D" */
-    {0x9F, 0x00}, /* "E" */
-    {0x8F, 0x00}, /* "F" */
-    {0xBD, 0x00}, /* "G" */
-    {0x6F, 0x00}, /* "H" */
-    {0x90, 0x50}, /* "I" */
-    {0x78, 0x00}, /* "J" */
-    {0x0E, 0x22}, /* "K" */
-    {0x1C, 0x00}, /* "L" */
-    {0x6C, 0xA0}, /* "M" */
-    {0x6C, 0x82}, /* "N" */
-    {0xFC, 0x00}, /* "O" */
-    {0xCF, 0x00}, /* "P" */
-    {0xFC, 0x02}, /* "Q" */
-    {0xCF, 0x02}, /* "R" */
-    {0xB7, 0x00}, /* "S" */
-    {0x80, 0x50}, /* "T" */
-    {0x7C, 0x00}, /* "U" */
-    {0x0C, 0x28}, /* "V" */
-    {0x6C, 0x0A}, /* "W" */
-    {0x00, 0xAA}, /* "X" */
-    {0x00, 0xB0}, /* "Y" */
-    {0x90, 0x28} /* "Z" */
+        TIMER_A_CLOCKSOURCE_SMCLK,              // SMCLK Clock Source
+        TIMER_A_CLOCKSOURCE_DIVIDER_1,          // SMCLK/4 = 2MHz
+        30000,                                  // 15ms debounce period
+        TIMER_A_TAIE_INTERRUPT_DISABLE,         // Disable Timer interrupt
+        TIMER_A_CCIE_CCR0_INTERRUPT_ENABLE ,    // Enable CCR0 interrupt
+        TIMER_A_DO_CLEAR,                       // Clear value
+        true                                    // Start Timer
 };
 
-void ShowBuffer(int buffer[]) {
-    LCDMEM[9] = alphabetBig[(buffer[0])-65][0];
-    LCDMEM[10] = alphabetBig[(buffer[0])-65][1];
-    LCDMEM[5] = alphabetBig[(buffer[1])-65][0];
-    LCDMEM[6] = alphabetBig[(buffer[1])-65][1];
-    LCDMEM[3] = alphabetBig[(buffer[2])-65][0];
-    LCDMEM[4] = alphabetBig[(buffer[2])-65][1];
-    LCDMEM[18] = alphabetBig[(buffer[3])-65][0];
-    LCDMEM[19] = alphabetBig[(buffer[3])-65][1];
-    LCDMEM[14] = alphabetBig[(buffer[4])-65][0];
-    LCDMEM[15] = alphabetBig[(buffer[4])-65][1];
-    LCDMEM[7] = alphabetBig[(buffer[5])-65][0];
-    LCDMEM[8] = alphabetBig[(buffer[5])-65][1];
-}
-
-#include <msp430.h>
-
-int main() {
-
-    // Initialize the system
-    WDTCTL = WDTPW | WDTHOLD;               // Stop watchdog timer
-    PM5CTL0 &= ~LOCKLPM5;                   // Disable the GPIO power-on default high-impedance mode
-                                            // to activate previously configured port settings
-
-    // Select the Primary Module Function for Transmission
-    P3SEL0 |= BIT4;         // Set to 1
-    P3SEL1 &= ~BIT4;        // Set to 0
-    // Select the Primary Module Function for Reception
-    P3SEL0 |= BIT5;         // Set to 1
-    P3SEL1 &= ~BIT5;        // Set to 0
-
-    // 8 Hz clock signal configuration
-    CSCTL0_H = CSKEY >> 8; // Unlock clock registers
-    CSCTL1 = DCOFSEL_3 | DCORSEL; // Set DCO to 8MHz
-    CSCTL2 = SELA_VLOCLK | SELSDCOCLK | SELM_DCOCLK;
-    CSCTL3 = DIVA_1 | DIVS1 | DIVM_1; // Set all dividers
-    CSCTL0_H = 0; // Lock CS registers
-
-    // eUSCI module configuration for UART mode
-
-    // Configure USCI_A1 for UART mode
-    UCA1CTLW0 = UCSWRST; // Put eUSCI in reset
-    UCA1CTLW0 |= UCSSEL__SMCLK; // CLK = SMCLK
-
-    // Baud Rate calculation
-    // 8000000/(16*9600) = 52.083
-    // Fractional portion = 0.083
-    // User's Guide Table 21-4: UCBRSx = 0x04
-    // UCBRFx = int ( (52.083-52)*16) = 1
-
-    UCA1BR0 = 52; // 8000000/16/9600
-    UCA1BR1 = 0x00;
-    UCA1MCTLW |= UCOS16 | UCBRF_1 | 0x4900;
-    UCA1CTLW0 &= ~UCSWRST; // Initialize eUSCI
-
-    // Configure interruptions to receive and transmit data in register UCA1IE
-    UCA1IE |= BIT1;     // Enable the UART transmission interrupts (bit 1 in UCA1IE)
-    // Configure interruptions to receive and transmit data in register UCA1IE
-    UCA1IE |= BIT0;     // Enable the receive interrupt
-
-    Initialize_LCD();
-
-    _BIS_SR(GIE);         // Enable the global interrupts
+// Initialization calls
+void Init_GPIO(void);
+void Init_Clock(void);
 
 
+/*
+ * Main routine
+ */
+int main(void) {
+    // Stop watchdog timer
+    WDT_A_hold(__MSP430_BASEADDRESS_WDT_A__);
 
-}
+    // Disable the GPIO power-on default high-impedance mode to activate
+    // previously configured port settings
+    PMM_unlockLPM5();
 
-void ShiftBuffer(int buffer[], int m) {
-    int i;
-    for (i = 0; i < 5; i++) {
-        buffer[i] = buffer[i + 1];
+    //enable interrupts
+    __enable_interrupt();
+
+    // Initializations
+    Init_GPIO();
+    Init_Clock();
+    Init_LCD();
+
+    GPIO_clearInterrupt(GPIO_PORT_P1, GPIO_PIN1);
+    GPIO_clearInterrupt(GPIO_PORT_P1, GPIO_PIN2);
+
+    __enable_interrupt();
+
+    displayScrollText("WELCOME TO THE FR6989 LAUNCHPAD");
+
+    int i = 0x01;
+
+    while(1)
+    {
+        LCD_C_selectDisplayMemory(LCD_C_BASE, LCD_C_DISPLAYSOURCE_MEMORY);
+        switch(mode)
+        {
+            case STARTUP_MODE:        // Startup mode
+                // Set RTC counter to trigger interrupt every ~250 ms
+                RTC_C_initCounter(RTC_C_BASE, RTC_C_CLOCKSELECT_32KHZ_OSC, RTC_C_COUNTERSIZE_16BIT);
+                RTC_C_definePrescaleEvent(RTC_C_BASE, RTC_C_PRESCALE_1, RTC_C_PSEVENTDIVIDER_32);
+                RTC_C_enableInterrupt(RTC_C_BASE, RTC_C_PRESCALE_TIMER1_INTERRUPT);
+                RTC_C_startClock(RTC_C_BASE);
+
+                // Cycle through all LCD segments and display instruction message
+                if (i <= 0x80)
+                {
+                    LCDMEM[pos1] = LCDMEM[pos1+1] = i;
+                    LCDMEM[pos2] = LCDMEM[pos2+1] = i;
+                    LCDMEM[pos3] = LCDMEM[pos3+1] = i;
+                    LCDMEM[pos4] = LCDMEM[pos4+1] = i;
+                    LCDMEM[pos5] = LCDMEM[pos5+1] = i;
+                    LCDMEM[pos6] = LCDMEM[pos6+1] = i;
+                    LCDM14 = i << 4;
+                    LCDM18 = i;
+                    LCDM3 = i;
+                    i<<=1;
+                }
+                else
+                {
+                    i=1;
+                    clearLCD();
+                    displayScrollText("HOLD S1 AND S2 TO SWITCH MODES");
+                }
+                __bis_SR_register(LPM3_bits | GIE);         // enter LPM3
+                __no_operation();
+                break;
+            case STOPWATCH_MODE:         // Stopwatch Timer mode
+                clearLCD();              // Clear all LCD segments
+                stopWatchModeInit();     // Initialize stopwatch mode
+                stopWatch();
+                break;
+            case TEMPSENSOR_MODE:        // Temperature Sensor mode
+                clearLCD();              // Clear all LCD segments
+                tempSensorModeInit();    // initialize temperature mode
+                tempSensor();
+                break;
+        }
     }
-    buffer[5] = m;
 }
 
-#pragma vector=USCI_A1_VECTOR
-__interrupt void USCI_A1_ISR(void)
+
+/*
+ * GPIO Initialization
+ */
+void Init_GPIO()
 {
-    if (UCA1IFG & UCTXIFG)  // Check if a transmission interrupt has happened
+    // Set all GPIO pins to output low to prevent floating input and reduce power consumption
+    GPIO_setOutputLowOnPin(GPIO_PORT_P1, GPIO_PIN0|GPIO_PIN1|GPIO_PIN2|GPIO_PIN3|GPIO_PIN4|GPIO_PIN5|GPIO_PIN6|GPIO_PIN7);
+    GPIO_setOutputLowOnPin(GPIO_PORT_P2, GPIO_PIN0|GPIO_PIN1|GPIO_PIN2|GPIO_PIN3|GPIO_PIN4|GPIO_PIN5|GPIO_PIN6|GPIO_PIN7);
+    GPIO_setOutputLowOnPin(GPIO_PORT_P3, GPIO_PIN0|GPIO_PIN1|GPIO_PIN2|GPIO_PIN3|GPIO_PIN4|GPIO_PIN5|GPIO_PIN6|GPIO_PIN7);
+    GPIO_setOutputLowOnPin(GPIO_PORT_P4, GPIO_PIN0|GPIO_PIN1|GPIO_PIN2|GPIO_PIN3|GPIO_PIN4|GPIO_PIN5|GPIO_PIN6|GPIO_PIN7);
+    GPIO_setOutputLowOnPin(GPIO_PORT_P5, GPIO_PIN0|GPIO_PIN1|GPIO_PIN2|GPIO_PIN3|GPIO_PIN4|GPIO_PIN5|GPIO_PIN6|GPIO_PIN7);
+    GPIO_setOutputLowOnPin(GPIO_PORT_P6, GPIO_PIN0|GPIO_PIN1|GPIO_PIN2|GPIO_PIN3|GPIO_PIN4|GPIO_PIN5|GPIO_PIN6|GPIO_PIN7);
+    GPIO_setOutputLowOnPin(GPIO_PORT_P7, GPIO_PIN0|GPIO_PIN1|GPIO_PIN2|GPIO_PIN3|GPIO_PIN4|GPIO_PIN5|GPIO_PIN6|GPIO_PIN7);
+    GPIO_setOutputLowOnPin(GPIO_PORT_P8, GPIO_PIN0|GPIO_PIN1|GPIO_PIN2|GPIO_PIN3|GPIO_PIN4|GPIO_PIN5|GPIO_PIN6|GPIO_PIN7);
+    GPIO_setOutputLowOnPin(GPIO_PORT_P9, GPIO_PIN0|GPIO_PIN1|GPIO_PIN2|GPIO_PIN3|GPIO_PIN4|GPIO_PIN5|GPIO_PIN6|GPIO_PIN7);
+
+    GPIO_setAsOutputPin(GPIO_PORT_P1, GPIO_PIN0|GPIO_PIN1|GPIO_PIN2|GPIO_PIN3|GPIO_PIN4|GPIO_PIN5|GPIO_PIN6|GPIO_PIN7);
+    GPIO_setAsOutputPin(GPIO_PORT_P2, GPIO_PIN0|GPIO_PIN1|GPIO_PIN2|GPIO_PIN3|GPIO_PIN4|GPIO_PIN5|GPIO_PIN6|GPIO_PIN7);
+    GPIO_setAsOutputPin(GPIO_PORT_P3, GPIO_PIN0|GPIO_PIN1|GPIO_PIN2|GPIO_PIN3|GPIO_PIN4|GPIO_PIN5|GPIO_PIN6|GPIO_PIN7);
+    GPIO_setAsOutputPin(GPIO_PORT_P4, GPIO_PIN0|GPIO_PIN1|GPIO_PIN2|GPIO_PIN3|GPIO_PIN4|GPIO_PIN5|GPIO_PIN6|GPIO_PIN7);
+    GPIO_setAsOutputPin(GPIO_PORT_P5, GPIO_PIN0|GPIO_PIN1|GPIO_PIN2|GPIO_PIN3|GPIO_PIN4|GPIO_PIN5|GPIO_PIN6|GPIO_PIN7);
+    GPIO_setAsOutputPin(GPIO_PORT_P6, GPIO_PIN0|GPIO_PIN1|GPIO_PIN2|GPIO_PIN3|GPIO_PIN4|GPIO_PIN5|GPIO_PIN6|GPIO_PIN7);
+    GPIO_setAsOutputPin(GPIO_PORT_P7, GPIO_PIN0|GPIO_PIN1|GPIO_PIN2|GPIO_PIN3|GPIO_PIN4|GPIO_PIN5|GPIO_PIN6|GPIO_PIN7);
+    GPIO_setAsOutputPin(GPIO_PORT_P8, GPIO_PIN0|GPIO_PIN1|GPIO_PIN2|GPIO_PIN3|GPIO_PIN4|GPIO_PIN5|GPIO_PIN6|GPIO_PIN7);
+    GPIO_setAsOutputPin(GPIO_PORT_P9, GPIO_PIN0|GPIO_PIN1|GPIO_PIN2|GPIO_PIN3|GPIO_PIN4|GPIO_PIN5|GPIO_PIN6|GPIO_PIN7);
+
+    GPIO_setAsInputPin(GPIO_PORT_P3, GPIO_PIN5);
+
+    // Configure button S1 (P1.1) interrupt
+    GPIO_selectInterruptEdge(GPIO_PORT_P1, GPIO_PIN1, GPIO_HIGH_TO_LOW_TRANSITION);
+    GPIO_setAsInputPinWithPullUpResistor(GPIO_PORT_P1, GPIO_PIN1);
+    GPIO_clearInterrupt(GPIO_PORT_P1, GPIO_PIN1);
+    GPIO_enableInterrupt(GPIO_PORT_P1, GPIO_PIN1);
+
+    // Configure button S2 (P1.2) interrupt
+    GPIO_selectInterruptEdge(GPIO_PORT_P1, GPIO_PIN2, GPIO_HIGH_TO_LOW_TRANSITION);
+    GPIO_setAsInputPinWithPullUpResistor(GPIO_PORT_P1, GPIO_PIN2);
+    GPIO_clearInterrupt(GPIO_PORT_P1, GPIO_PIN2);
+    GPIO_enableInterrupt(GPIO_PORT_P1, GPIO_PIN2);
+
+    // Set P4.1 and P4.2 as Secondary Module Function Input, LFXT.
+    GPIO_setAsPeripheralModuleFunctionInputPin(
+           GPIO_PORT_PJ,
+           GPIO_PIN4 + GPIO_PIN5,
+           GPIO_PRIMARY_MODULE_FUNCTION
+           );
+
+    // Disable the GPIO power-on default high-impedance mode
+    // to activate previously configured port settings
+    PMM_unlockLPM5();
+}
+
+/*
+ * Clock System Initialization
+ */
+void Init_Clock()
+{
+    // Set DCO frequency to default 8MHz
+    CS_setDCOFreq(CS_DCORSEL_0, CS_DCOFSEL_6);
+
+    // Configure MCLK and SMCLK to default 2MHz
+    CS_initClockSignal(CS_MCLK, CS_DCOCLK_SELECT, CS_CLOCK_DIVIDER_8);
+    CS_initClockSignal(CS_SMCLK, CS_DCOCLK_SELECT, CS_CLOCK_DIVIDER_8);
+
+    // Intializes the XT1 crystal oscillator
+    CS_turnOnLFXT(CS_LFXT_DRIVE_3);
+}
+
+/*
+ * RTC Interrupt Service Routine
+ * Wakes up every ~10 milliseconds to update stowatch
+ */
+#if defined(__TI_COMPILER_VERSION__) || defined(__IAR_SYSTEMS_ICC__)
+#pragma vector=RTC_VECTOR
+__interrupt
+#elif defined(__GNUC__)
+__attribute__((interrupt(RTC_VECTOR)))
+#endif
+void RTC_ISR(void)
+{
+    switch(__even_in_range(RTCIV, 16))
     {
-        // Send the next uppercase letter to the hypervisor writing its ASCII code in UCA1TXBUF
-        c = c + 1;
-        if (c > 'Z') c = 'A'; // Reset alphabet to 'A' after 'Z'
-        UCA1TXBUF = c; // Load data into TX buffer
-        __delay_cycles(10); // Add a delay if transmission is too fast
+    case RTCIV_NONE: break;      //No interrupts
+    case RTCIV_RTCOFIFG: break;      //RTCOFIFG
+    case RTCIV_RTCRDYIFG:             //RTCRDYIFG
+        counter = RTCPS;
+        centisecond = 0;
+        __bic_SR_register_on_exit(LPM3_bits);
+        break;
+    case RTCIV_RTCTEVIFG:             //RTCEVIFG
+        //Interrupts every minute
+        __no_operation();
+        break;
+    case RTCIV_RTCAIFG:             //RTCAIFG
+        __no_operation();
+        break;
+    case RTCIV_RT0PSIFG:
+        centisecond = RTCPS - counter;
+        __bic_SR_register_on_exit(LPM3_bits);
+        break;     //RT0PSIFG
+    case RTCIV_RT1PSIFG:
+        __bic_SR_register_on_exit(LPM3_bits);
+        break;     //RT1PSIFG
+
+    default: break;
+    }
+}
+
+/*
+ * PORT1 Interrupt Service Routine
+ * Handles S1 and S2 button press interrupts
+ */
+#pragma vector = PORT1_VECTOR
+__interrupt void PORT1_ISR(void)
+{
+    switch(__even_in_range(P1IV, P1IV_P1IFG7))
+    {
+        case P1IV_NONE : break;
+        case P1IV_P1IFG0 : break;
+        case P1IV_P1IFG1 :    // Button S1 pressed
+            P1OUT |= BIT0;    // Turn LED1 On
+            if ((S1buttonDebounce) == 0)
+            {
+                // Set debounce flag on first high to low transition
+                S1buttonDebounce = 1;
+                holdCount = 0;
+                if (mode == STOPWATCH_MODE)
+                {
+                    // Start/Pause stopwatch
+                    stopWatchRunning ^= 0x1;
+                    if (stopWatchRunning)
+                        RTC_C_startClock(RTC_C_BASE);
+                    else
+                        RTC_C_holdClock(RTC_C_BASE);
+                }
+                if (mode == TEMPSENSOR_MODE)
+                {
+                    // Start/Pause temp sensor
+                    tempSensorRunning ^= 0x1;
+                    if (tempSensorRunning)
+                        // Start ADC conversion
+                        ADC12_B_startConversion(ADC12_B_BASE, ADC12_B_START_AT_ADC12MEM0, ADC12_B_REPEATED_SINGLECHANNEL);
+                    else
+                        // Disable ADC conversion
+                        ADC12_B_disableConversions(ADC12_B_BASE,true);
+                }
+
+                // Start debounce timer
+                Timer_A_initUpMode(TIMER_A0_BASE, &initUpParam_A0);
+            }
+            break;
+        case P1IV_P1IFG2 :    // Button S2 pressed
+            P9OUT |= BIT7;    // Turn LED2 On
+            if ((S2buttonDebounce) == 0)
+            {
+                // Set debounce flag on first high to low transition
+                S2buttonDebounce = 1;
+                holdCount = 0;
+                switch (mode)
+                {
+                    case STOPWATCH_MODE:
+                        // Reset stopwatch if stopped; Split if running
+                        if (!(stopWatchRunning))
+                        {
+                            if (LCDCMEMCTL & LCDDISP)
+                                LCDCMEMCTL &= ~LCDDISP;
+                            else
+                                resetStopWatch();
+                        }
+                        else
+                        {
+                            // Use LCD Blink memory to pause/resume stopwatch at split time
+                            LCDBMEM[pos1] = LCDMEM[pos1];
+                            LCDBMEM[pos1+1] = LCDMEM[pos1+1];
+                            LCDBMEM[pos2] = LCDMEM[pos2];
+                            LCDBMEM[pos2+1] = LCDMEM[pos2+1];
+                            LCDBMEM[pos3] = LCDMEM[pos3];
+                            LCDBMEM[pos3+1] = LCDMEM[pos3+1];
+                            LCDBMEM[pos4] = LCDMEM[pos4];
+                            LCDBMEM[pos4+1] = LCDMEM[pos4+1];
+                            LCDBMEM[pos5] = LCDMEM[pos5];
+                            LCDBMEM[pos5+1] = LCDMEM[pos5+1];
+                            LCDBMEM[pos6] = LCDMEM[pos6];
+                            LCDBMEM[pos6+1] = LCDMEM[pos6+1];
+                            LCDBM3 = LCDM3;
+
+                            // Toggle between LCD Normal/Blink memory
+                            LCDCMEMCTL ^= LCDDISP;
+                        }
+                        break;
+                    case TEMPSENSOR_MODE:
+                        // Toggle temperature unit flag
+                        tempUnit ^= 0x01;
+                        // Update LCD when temp sensor is not running
+                        if (!tempSensorRunning)
+                            displayTemp();
+                        break;
+                }
+
+                // Start debounce timer
+                Timer_A_initUpMode(TIMER_A0_BASE, &initUpParam_A0);
+            }
+            break;
+        case P1IV_P1IFG3 : break;
+        case P1IV_P1IFG4 : break;
+        case P1IV_P1IFG5 : break;
+        case P1IV_P1IFG6 : break;
+        case P1IV_P1IFG7 : break;
+    }
+}
+
+/*
+ * Timer A0 Interrupt Service Routine
+ * Used as button debounce timer
+ */
+#pragma vector = TIMER0_A0_VECTOR
+__interrupt void TIMER0_A0_ISR (void)
+{
+    // Both button S1 & S2 held down
+    if (!(P1IN & BIT1) && !(P1IN & BIT2))
+    {
+        holdCount++;
+        if (holdCount == 40)
+        {
+            // Stop Timer A0
+            Timer_A_stop(TIMER_A0_BASE);
+
+            // Change mode
+            if (mode == STARTUP_MODE)
+                mode = STOPWATCH_MODE;
+            else if (mode == STOPWATCH_MODE)
+            {
+                mode = TEMPSENSOR_MODE;
+                stopWatchRunning = 0;
+                // Hold RTC
+                RTC_C_holdClock(RTC_C_BASE);
+            }
+            else if (mode == TEMPSENSOR_MODE)
+            {
+                mode = STOPWATCH_MODE;
+                tempSensorRunning = 0;
+                // Disable ADC12, TimerA1, Internal Ref and Temp used by TempSensor Mode
+                ADC12_B_disable(ADC12_B_BASE);
+                ADC12_B_disableConversions(ADC12_B_BASE,true);
+
+                Timer_A_stop(TIMER_A1_BASE);
+            }
+            __bic_SR_register_on_exit(LPM3_bits);                // exit LPM3
+        }
     }
 
-    if (UCA1IFG & UCRXIFG)  // Check if a reception interrupt has happened
+    // Button S1 released
+    if (P1IN & BIT1)
     {
-        ShiftBuffer(buffer, UCA1RXBUF);
-        ShowBuffer(buffer);   // Display the new content of the buffer on
-     }
+        S1buttonDebounce = 0;                                   // Clear button debounce
+        P1OUT &= ~BIT0;
+    }
+
+    // Button S2 released
+    if (P1IN & BIT2)
+    {
+        S2buttonDebounce = 0;                                   // Clear button debounce
+        P9OUT &= ~BIT7;
+    }
+
+    // Both button S1 & S2 released
+    if ((P1IN & BIT1) && (P1IN & BIT2))
+    {
+        // Stop timer A0
+        Timer_A_stop(TIMER_A0_BASE);
+    }
+
+    if (mode == STOPWATCH_MODE || mode == TEMPSENSOR_MODE)
+        __bic_SR_register_on_exit(LPM3_bits);            // exit LPM3
+}
+
+/*
+ * ADC 12 Interrupt Service Routine
+ * Wake up from LPM3 to display temperature
+ */
+#pragma vector=ADC12_VECTOR
+__interrupt void ADC12_ISR(void)
+{
+    switch(__even_in_range(ADC12IV,12))
+    {
+    case  0: break;                         // Vector  0:  No interrupt
+    case  2: break;                         // Vector  2:  ADC12BMEMx Overflow
+    case  4: break;                         // Vector  4:  Conversion time overflow
+    case  6: break;                         // Vector  6:  ADC12BHI
+    case  8: break;                         // Vector  8:  ADC12BLO
+    case 10: break;                         // Vector 10:  ADC12BIN
+    case 12:                                // Vector 12:  ADC12BMEM0 Interrupt
+        ADC12_B_clearInterrupt(ADC12_B_BASE, 0, ADC12_B_IFG0);
+        __bic_SR_register_on_exit(LPM3_bits);   // Exit active CPU
+        break;                              // Clear CPUOFF bit from 0(SR)
+    case 14: break;                         // Vector 14:  ADC12BMEM1
+    case 16: break;                         // Vector 16:  ADC12BMEM2
+    case 18: break;                         // Vector 18:  ADC12BMEM3
+    case 20: break;                         // Vector 20:  ADC12BMEM4
+    case 22: break;                         // Vector 22:  ADC12BMEM5
+    case 24: break;                         // Vector 24:  ADC12BMEM6
+    case 26: break;                         // Vector 26:  ADC12BMEM7
+    case 28: break;                         // Vector 28:  ADC12BMEM8
+    case 30: break;                         // Vector 30:  ADC12BMEM9
+    case 32: break;                         // Vector 32:  ADC12BMEM10
+    case 34: break;                         // Vector 34:  ADC12BMEM11
+    case 36: break;                         // Vector 36:  ADC12BMEM12
+    case 38: break;                         // Vector 38:  ADC12BMEM13
+    case 40: break;                         // Vector 40:  ADC12BMEM14
+    case 42: break;                         // Vector 42:  ADC12BMEM15
+    case 44: break;                         // Vector 44:  ADC12BMEM16
+    case 46: break;                         // Vector 46:  ADC12BMEM17
+    case 48: break;                         // Vector 48:  ADC12BMEM18
+    case 50: break;                         // Vector 50:  ADC12BMEM19
+    case 52: break;                         // Vector 52:  ADC12BMEM20
+    case 54: break;                         // Vector 54:  ADC12BMEM21
+    case 56: break;                         // Vector 56:  ADC12BMEM22
+    case 58: break;                         // Vector 58:  ADC12BMEM23
+    case 60: break;                         // Vector 60:  ADC12BMEM24
+    case 62: break;                         // Vector 62:  ADC12BMEM25
+    case 64: break;                         // Vector 64:  ADC12BMEM26
+    case 66: break;                         // Vector 66:  ADC12BMEM27
+    case 68: break;                         // Vector 68:  ADC12BMEM28
+    case 70: break;                         // Vector 70:  ADC12BMEM29
+    case 72: break;                         // Vector 72:  ADC12BMEM30
+    case 74: break;                         // Vector 74:  ADC12BMEM31
+    case 76: break;                         // Vector 76:  ADC12BRDY
+    default: break;
+    }
 }
