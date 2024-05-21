@@ -119,3 +119,17 @@ Lab 4 consists on configuring and managing the serial communication of the board
 	- You just need one ISR to service both transmission and reception.
 	
 	- Inside the ISR, check if the interrupt was produced by the reception or the transmission, and add the code of the two previous programs to each of the cases.
+
+## Final Project
+
+My final project consists on what I called the "Fast Game". It is a very simple way in which you compete against your friends to see who clicks the button faster.
+
+The main goal of the game is to click the button 10 times as fast as possible.
+
+The project uses the buttons, LEDs and LCD of the MSP430FR6989 board.
+
+- The buttons (one for each player) are the ones that the players press and using interruptions, I am able to update the necessary variables for the players to earn points.
+
+- The LEDs (one for each player) turn on whenever a player presses its button.
+
+- The LCD is used to display messages, such as the player's points and who the winner is.
